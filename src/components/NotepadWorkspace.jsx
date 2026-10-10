@@ -106,7 +106,7 @@ export default function NotepadWorkspace({
     };
   }, [activeNote?.content]);
 
-  // Run Python NLP Smart Analysis via Backend
+  // Run Python NLP Smart Analysis via Backend (with automatic in-browser fallback for cloud/static hosting)
   const handleRunPythonNlp = async () => {
     if (!activeNote) return;
     try {
@@ -119,10 +119,35 @@ export default function NotepadWorkspace({
         const data = await res.json();
         setNlpResult(data);
         setEditorMode('analytics');
+        return;
       }
     } catch (e) {
-      console.error(e);
+      // Fallback to in-browser NLP calculation when hosted statically
     }
+    const raw = (activeNote.content || '').trim();
+    const words = raw ? raw.match(/\b[a-zA-Z0-9']+\b/g) || [] : [];
+    const sents = raw ? raw.split(/[.!?]+/).map((s) => s.trim()).filter(Boolean) : [];
+    const wordCount = words.length;
+    const sentCount = Math.max(1, sents.length);
+    const syllables = words.reduce((acc, w) => {
+      const m = w.toLowerCase().match(/[aeiouy]+/g);
+      return acc + Math.max(1, m ? m.length : 1);
+    }, 0);
+    const ease = wordCount
+      ? Math.max(0, Math.min(100, Math.round(206.835 - 1.015 * (wordCount / sentCount) - 84.6 * (syllables / wordCount))))
+      : 100;
+    const grade = wordCount
+      ? Math.max(1, Math.round(0.39 * (wordCount / sentCount) + 11.8 * (syllables / wordCount) - 15.59))
+      : 1;
+    const unique = new Set(words.map((w) => w.toLowerCase())).size;
+    const diversity = wordCount ? Math.round((unique / wordCount) * 100) : 0;
+    setNlpResult({
+      readingEase: ease,
+      gradeLevel: `Grade ${grade}`,
+      lexicalDiversity: diversity,
+      summary: sents.slice(0, 2).join('. ') || 'Write at least two sentences to generate an extractive summary.',
+    });
+    setEditorMode('analytics');
   };
 
   // ==================== POWER-TOOLS ACTIONS ====================
@@ -159,7 +184,7 @@ export default function NotepadWorkspace({
     onUpdateNote(activeNote.id, { content: updated });
   };
 
-  // Run Python 3.13 on Backend OR JS in Browser
+  // Run Python 3.13 on Backend (or Pyodide WebAssembly in Browser) OR JS in Browser
   const handleExecuteCode = async () => {
     if (!activeNote) return;
     setIsRunningCode(true);
@@ -186,10 +211,33 @@ export default function NotepadWorkspace({
           return;
         }
       } catch (err) {
-        setCodeOutput([`Python Server Error: ${err.message}`]);
-        setIsRunningCode(false);
-        return;
+        // Fallback to Pyodide WebAssembly Python in browser when hosted statically
       }
+
+      try {
+        setCodeOutput(['[Loading Pyodide WebAssembly Python Runtime in Browser...]']);
+        if (!window.loadPyodide) {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js';
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        if (!window.__pyodideInstance) {
+          window.__pyodideInstance = await window.loadPyodide();
+        }
+        const pyOut = ['[Pyodide WebAssembly Python Output]'];
+        window.__pyodideInstance.setStdout({ batched: (msg) => pyOut.push(msg) });
+        await window.__pyodideInstance.runPythonAsync(activeNote.content);
+        if (pyOut.length === 1) pyOut.push('✓ Python script executed cleanly.');
+        setCodeOutput(pyOut);
+      } catch (pyErr) {
+        setCodeOutput([`Python Error: ${pyErr.message}`]);
+      }
+      setIsRunningCode(false);
+      return;
     }
 
     // JavaScript Sandbox Execution

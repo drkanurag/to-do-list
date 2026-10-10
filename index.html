@@ -64,9 +64,10 @@
         ]);
 
         let combinedSource = '';
-        const bundleRes = await fetch('/app.bundle.jsx?t=' + Date.now()).catch(() => null);
-        if (bundleRes && bundleRes.ok) {
-          combinedSource = await bundleRes.text();
+        const bundleRes = await fetch('./app.bundle.jsx?t=' + Date.now()).catch(() => null);
+        const bundleText = bundleRes && bundleRes.ok ? await bundleRes.text() : '';
+        if (bundleText && !bundleText.trim().startsWith('<')) {
+          combinedSource = bundleText;
         } else {
           const files = [
             './src/utils/exportUtils.js',
