@@ -5,20 +5,116 @@
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Todo App</title>
+  <title>OmniWord Studio — Next-Gen Word Processor, Super-Notepad &amp; Task Suite</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Press+Start+2P&display=swap"
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
     integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
     crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+  <!-- KaTeX CSS for Mathematical Equations -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous" />
+
+  <link rel="stylesheet" href="./src/index.css" />
+
+  <!-- Open-Source Engines: html2pdf.js (PDF), Chart.js (Charts), KaTeX (Math), Mermaid.js (Diagrams), Marked.js (Markdown), Canvas-Confetti (Animations) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.8.0/dist/mermaid.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.2.0/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js" defer></script>
 </head>
 
 <body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
+  <div id="root">
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 50%,#312e81 100%);color:#ffffff;font-family:'Inter',system-ui,sans-serif;gap:14px;">
+      <div style="width:54px;height:54px;border-radius:14px;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.28);display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 12px 30px rgba(0,0,0,0.3);">
+        <i class="fa-solid fa-file-word" style="color:#60a5fa;"></i>
+      </div>
+      <div style="font-size:20px;font-weight:800;letter-spacing:-0.02em;">OmniWord Studio</div>
+      <div style="font-size:13px;color:#93c5fd;">Loading Word Processor, Super-Notepad &amp; Kanban Suite...</div>
+    </div>
+  </div>
+
+  <!-- Fast Unified Bootloader (Supports Full-Stack Server /app.bundle.jsx, Vite, and Static Servers) -->
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      const rootEl = document.getElementById('root');
+      if (!rootEl) return;
+
+      const loadScript = (src) =>
+        new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.crossOrigin = 'anonymous';
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+
+      try {
+        await loadScript('https://unpkg.com/react@18/umd/react.production.min.js');
+        await Promise.all([
+          loadScript('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js'),
+          loadScript('https://unpkg.com/@babel/standalone/babel.min.js'),
+        ]);
+
+        let combinedSource = '';
+        const bundleRes = await fetch('/app.bundle.jsx?t=' + Date.now()).catch(() => null);
+        if (bundleRes && bundleRes.ok) {
+          combinedSource = await bundleRes.text();
+        } else {
+          const files = [
+            './src/utils/exportUtils.js',
+            './src/utils/templates.js',
+            './src/components/InteractiveModals.jsx',
+            './src/components/BentoDashboard.jsx',
+            './src/components/RibbonToolbar.jsx',
+            './src/components/TodoManager.jsx',
+            './src/components/NotepadWorkspace.jsx',
+            './src/App.jsx',
+          ];
+          const sources = await Promise.all(
+            files.map((f) => fetch(f).then((r) => r.text()))
+          );
+          combinedSource =
+            `const { useState, useEffect, useRef, useCallback, useMemo } = React;\n` +
+            sources
+              .map((code) =>
+                code
+                  .replace(/^\s*import\s+[\s\S]*?\s+from\s+['"][^'"]+['"];?\s*$/gm, '')
+                  .replace(/^\s*import\s+['"][^'"]+['"];?\s*$/gm, '')
+                  .replace(/export\s+default\s+function\s+/g, 'function ')
+                  .replace(/export\s+async\s+function\s+/g, 'async function ')
+                  .replace(/export\s+function\s+/g, 'function ')
+                  .replace(/export\s+const\s+/g, 'const ')
+              )
+              .join('\n\n') +
+            `\nReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));`;
+        }
+
+        const compiled = window.Babel.transform(combinedSource, {
+          presets: [['react', { runtime: 'classic' }]],
+        }).code;
+
+        rootEl.innerHTML = '';
+        const runner = new Function('React', 'ReactDOM', compiled);
+        runner(window.React, window.ReactDOM);
+      } catch (err) {
+        console.error('Bootloader error:', err);
+        if (rootEl) {
+          rootEl.innerHTML =
+            '<div style="padding:32px;font-family:monospace;color:#ef4444;background:#0f172a;min-height:100vh;"><h3>Startup Error</h3><pre id="boot-err">' +
+            String(err && (err.stack || err.message || err)) +
+            '</pre></div>';
+        }
+      }
+    });
+  </script>
 </body>
 
 </html>
