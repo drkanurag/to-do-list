@@ -349,7 +349,7 @@ export function DiagramBuilderModal({ onClose, onInsertDiagramHtml }) {
         return;
       }
       try {
-        window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+        window.mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
         const id = `mermaid-svg-${Date.now()}`;
         const { svg } = await window.mermaid.render(id, code);
         if (active) {

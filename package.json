@@ -1,7 +1,8 @@
 {
-  "name": "reactjs-todolist",
+  "name": "omniword-studio",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Next-Gen Word Processor, Super-Notepad and Kanban Productivity Suite",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +11,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "canvas-confetti": "^1.9.2",
+    "chart.js": "^4.4.1",
+    "dompurify": "^3.0.9",
+    "html2pdf.js": "^0.10.1",
+    "katex": "^0.16.9",
+    "marked": "^11.2.0",
+    "mermaid": "^10.8.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

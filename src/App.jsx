@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import RibbonToolbar from './components/RibbonToolbar';
 import TodoManager from './components/TodoManager';
 import NotepadWorkspace from './components/NotepadWorkspace';
@@ -21,6 +21,10 @@ import {
   printDocument,
   convertTodosToHtml,
 } from './utils/exportUtils';
+import { escapeHtml, sanitizeUrl, sanitizeHtml } from './utils/sanitize';
+import { usePersistence } from './hooks/usePersistence';
+import { useTodoState } from './hooks/useTodoState';
+import { useNotepadState } from './hooks/useNotepadState';
 
 function fireCelebrationConfetti() {
   if (typeof window !== 'undefined' && window.confetti) {
@@ -32,41 +36,26 @@ function fireCelebrationConfetti() {
   }
 }
 
-const DEFAULT_TODOS = [];
-
-const DEFAULT_NOTES = [
-  {
-    id: 'note-1',
-    title: 'Untitled Note',
-    color: 'yellow',
-    pinned: false,
-    tags: [],
-    updatedAt: Date.now(),
-    content: '',
-  },
-];
-
-// Clear any previously cached demo/example data so the workspace starts clean and blank
-try {
-  if (typeof window !== 'undefined' && !localStorage.getItem('omniword_blank_reset_v1')) {
-    localStorage.removeItem('omniword_documents');
-    localStorage.removeItem('todos');
-    localStorage.removeItem('omniword_notes');
-    localStorage.removeItem('omniword_page_settings');
-    localStorage.setItem('omniword_blank_reset_v1', 'true');
-  }
-} catch (e) {
-  console.error(e);
-}
-
 export default function App() {
   // Primary Workspace Mode: 'bento' | 'word' | 'todo' | 'notepad' | 'split'
   const [workspaceMode, setWorkspaceMode] = useState('word');
   const [activeRibbonTab, setActiveRibbonTab] = useState('home');
   const [darkChrome, setDarkChrome] = useState(false);
   const [atmosphere, setAtmosphere] = useState(() => {
-    return localStorage.getItem('omniword_atmosphere') || 'aurora';
+    try {
+      return localStorage.getItem('omniword_atmosphere') || 'aurora';
+    } catch {
+      return 'aurora';
+    }
   });
+
+  const [toast, setToast] = useState(null);
+  const showToast = useCallback((message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 3400);
+  }, []);
 
   // Documents State
   const [documents, setDocuments] = useState(() => {
@@ -77,7 +66,7 @@ export default function App() {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (e) {
-      console.error(e);
+      console.error('Error loading documents:', e);
     }
     return [
       {
@@ -100,7 +89,7 @@ export default function App() {
       const saved = localStorage.getItem('omniword_page_settings');
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error(e);
+      console.error('Error loading page settings:', e);
     }
     return {
       fontFamily: 'Calibri, Candara, Segoe, Optima, Arial, sans-serif',
@@ -133,50 +122,33 @@ export default function App() {
   // Docked Right Panel Active Tab ('todo' | 'notepad')
   const [dockTab, setDockTab] = useState('todo');
 
-  // Todos State
-  const [todos, setTodos] = useState(() => {
-    try {
-      const raw = localStorage.getItem('todos');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const list = Array.isArray(parsed) ? parsed : parsed?.todos;
-        if (Array.isArray(list)) {
-          return list.map((item, idx) =>
-            typeof item === 'string'
-              ? {
-                  id: `legacy-${idx}-${Date.now()}`,
-                  text: item,
-                  completed: false,
-                  status: 'todo',
-                  priority: 'medium',
-                  category: 'General',
-                  dueDate: '',
-                  notes: '',
-                }
-              : item
-          );
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    return DEFAULT_TODOS;
-  });
+  // Custom Hooks for Modularized Task and Notepad State
+  const {
+    todos,
+    setTodos,
+    handleAddTodo,
+    handleToggleTodo,
+    handleDeleteTodo,
+    handleUpdateTodo,
+    handleClearCompletedTodos,
+  } = useTodoState(fireCelebrationConfetti);
 
-  // Notepad State
-  const [notes, setNotes] = useState(() => {
-    try {
-      const saved = localStorage.getItem('omniword_notes');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    return DEFAULT_NOTES;
-  });
-  const [activeNoteId, setActiveNoteId] = useState(() => notes[0]?.id || 'note-1');
+  const {
+    notes,
+    setNotes,
+    activeNoteId,
+    setActiveNoteId,
+    handleCreateNote,
+    handleUpdateNote,
+    handleDeleteNote,
+  } = useNotepadState();
+
+  // State Persistence & Backend Sync Hook (Debounced & Quota-Protected)
+  const stateData = useMemo(
+    () => ({ documents, todos, notes, pageSettings }),
+    [documents, todos, notes, pageSettings]
+  );
+  const { isBackendAvailable } = usePersistence(stateData, showToast);
 
   // UI Modals & Interactive Studios
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
@@ -196,19 +168,15 @@ export default function App() {
   const [isDictating, setIsDictating] = useState(false);
   const [formatPainterActive, setFormatPainterActive] = useState(false);
   const [copiedStyle, setCopiedStyle] = useState(null);
-  const [toast, setToast] = useState(null);
   const [outlineHeadings, setOutlineHeadings] = useState([]);
 
   const editorRef = useRef(null);
-  const activeDoc =
-    documents.find((d) => d.id === activeDocId) || documents[0];
+  const editorInputTimerRef = useRef(null);
 
-  const showToast = useCallback((message, type = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => {
-      setToast((prev) => (prev?.message === message ? null : prev));
-    }, 3400);
-  }, []);
+  const activeDoc = useMemo(
+    () => documents.find((d) => d.id === activeDocId) || documents[0],
+    [documents, activeDocId]
+  );
 
   // Global Keyboard Shortcut Ctrl+K for Interactive Feature Explorer
   useEffect(() => {
@@ -221,23 +189,6 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
-
-  // Persist States to LocalStorage + Python SQLite3 Backend (/api/state)
-  useEffect(() => {
-    localStorage.setItem('omniword_documents', JSON.stringify(documents));
-    localStorage.setItem('todos', JSON.stringify({ todos }));
-    localStorage.setItem('omniword_notes', JSON.stringify(notes));
-    localStorage.setItem('omniword_page_settings', JSON.stringify(pageSettings));
-
-    const timer = setTimeout(() => {
-      fetch('/api/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documents, todos, notes, pageSettings }),
-      }).catch(() => {});
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [documents, todos, notes, pageSettings]);
 
   // Extract headings for live Navigation Pane Outline
   const refreshOutline = useCallback(() => {
@@ -252,6 +203,7 @@ export default function App() {
     setOutlineHeadings(extracted);
   }, []);
 
+  // Sync active document content to DOM editor on document switch
   useEffect(() => {
     if (editorRef.current && activeDoc) {
       if (editorRef.current.innerHTML !== activeDoc.content) {
@@ -261,16 +213,38 @@ export default function App() {
     }
   }, [activeDocId, workspaceMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleEditorInput = () => {
-    if (!editorRef.current) return;
-    const html = editorRef.current.innerHTML;
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.id === activeDoc.id ? { ...d, content: html, updatedAt: Date.now() } : d
-      )
-    );
+  // Debounced input handler (350ms) to prevent full-tree re-renders on every keystroke
+  const handleEditorInput = useCallback(() => {
     refreshOutline();
-  };
+    if (editorInputTimerRef.current) {
+      clearTimeout(editorInputTimerRef.current);
+    }
+    editorInputTimerRef.current = setTimeout(() => {
+      if (!editorRef.current) return;
+      const html = editorRef.current.innerHTML;
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.id === activeDoc.id ? { ...d, content: html, updatedAt: Date.now() } : d
+        )
+      );
+    }, 350);
+  }, [activeDoc.id, refreshOutline]);
+
+  // Synchronously flush any pending debounced editor input
+  const flushEditorInput = useCallback(() => {
+    if (editorInputTimerRef.current) {
+      clearTimeout(editorInputTimerRef.current);
+      editorInputTimerRef.current = null;
+    }
+    if (editorRef.current) {
+      const html = editorRef.current.innerHTML;
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.id === activeDoc.id ? { ...d, content: html, updatedAt: Date.now() } : d
+        )
+      );
+    }
+  }, [activeDoc.id]);
 
   const handleEditorClick = (e) => {
     if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
@@ -311,11 +285,12 @@ export default function App() {
   };
 
   const insertHtmlAtCursor = (htmlSnippet) => {
+    const cleanSnippet = sanitizeHtml(htmlSnippet);
     if (!editorRef.current) {
       setDocuments((prev) =>
         prev.map((d) =>
           d.id === activeDoc.id
-            ? { ...d, content: d.content + htmlSnippet, updatedAt: Date.now() }
+            ? { ...d, content: d.content + cleanSnippet, updatedAt: Date.now() }
             : d
         )
       );
@@ -324,9 +299,9 @@ export default function App() {
     editorRef.current.focus();
     const sel = window.getSelection();
     if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
-      document.execCommand('insertHTML', false, htmlSnippet);
+      document.execCommand('insertHTML', false, cleanSnippet);
     } else {
-      editorRef.current.innerHTML += htmlSnippet;
+      editorRef.current.innerHTML += cleanSnippet;
     }
     handleEditorInput();
   };
@@ -342,14 +317,14 @@ export default function App() {
       }
       return;
     }
-    const text = sel.toString();
+    const cleanText = escapeHtml(sel.toString());
     let ptValue = sizeAction;
     if (sizeAction === 'increase') ptValue = '14pt';
     if (sizeAction === 'decrease') ptValue = '10pt';
     document.execCommand(
       'insertHTML',
       false,
-      `<span style="font-size: ${ptValue};">${text}</span>`
+      `<span style="font-size: ${ptValue};">${cleanText}</span>`
     );
     handleEditorInput();
   };
@@ -466,9 +441,10 @@ export default function App() {
   const handleInsertImage = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const cleanFileName = escapeHtml(file.name);
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const html = `<div style="text-align:center; margin:14px 0;"><img src="${ev.target.result}" alt="${file.name}" style="max-width:85%; height:auto; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.1);" /><p style="font-size:9.5pt; color:#64748b; margin-top:4px;">Figure: ${file.name}</p></div><p><br/></p>`;
+      const html = `<div style="text-align:center; margin:14px 0;"><img src="${ev.target.result}" alt="${cleanFileName}" style="max-width:85%; height:auto; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.1);" /><p style="font-size:9.5pt; color:#64748b; margin-top:4px;">Figure: ${cleanFileName}</p></div><p><br/></p>`;
       insertHtmlAtCursor(html);
       showToast(`Inserted image "${file.name}"`);
     };
@@ -477,16 +453,22 @@ export default function App() {
   };
 
   const handleInsertLink = () => {
-    const url = window.prompt('Enter URL (e.g. https://example.com):', 'https://');
-    if (!url) return;
-    const label = window.prompt('Enter link display text:', url) || url;
+    const rawUrl = window.prompt('Enter URL (e.g. https://example.com):', 'https://');
+    if (!rawUrl) return;
+    const cleanUrl = sanitizeUrl(rawUrl);
+    if (cleanUrl === '#') {
+      showToast('Invalid URL. Only http:, https:, and mailto: protocols are allowed.', 'warning');
+      return;
+    }
+    const rawLabel = window.prompt('Enter link display text:', rawUrl) || rawUrl;
+    const cleanLabel = escapeHtml(rawLabel);
     insertHtmlAtCursor(
-      `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; text-decoration:underline;">${label}</a> `
+      `<a href="${cleanUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; text-decoration:underline;">${cleanLabel}</a> `
     );
   };
 
   const handleInsertSymbol = (sym) => {
-    insertHtmlAtCursor(`<span>${sym}</span>`);
+    insertHtmlAtCursor(`<span>${escapeHtml(sym)}</span>`);
   };
 
   const handleInsertDateTime = () => {
@@ -494,7 +476,7 @@ export default function App() {
       dateStyle: 'full',
       timeStyle: 'short',
     });
-    insertHtmlAtCursor(`<span>${now}</span> `);
+    insertHtmlAtCursor(`<span>${escapeHtml(now)}</span> `);
   };
 
   const handleInsertPageBreak = () => {
@@ -505,10 +487,11 @@ export default function App() {
   };
 
   const handleInsertCoverPage = () => {
+    const safeTitle = escapeHtml(activeDoc.title);
     const coverHtml = `
       <div style="padding: 48px 24px; text-align: center; border: 2px solid #1e3a8a; border-radius: 8px; background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); margin-bottom: 28px; page-break-after: always;">
         <p style="letter-spacing: 3px; text-transform: uppercase; color: #2563eb; font-weight: 700; font-size: 10pt;">OFFICIAL DOCUMENT</p>
-        <h1 style="font-size: 28pt; color: #0f172a; margin: 16px 0;">${activeDoc.title}</h1>
+        <h1 style="font-size: 28pt; color: #0f172a; margin: 16px 0;">${safeTitle}</h1>
         <p style="font-size: 13pt; color: #475569; max-width: 520px; margin: 0 auto 32px;">Comprehensive Documentation, Action Plan &amp; Executive Summary</p>
         <hr style="width: 120px; margin: 24px auto; border-top: 3px solid #2563eb;" />
         <p style="font-size: 11pt; color: #334155; margin-top: 32px;"><strong>Prepared Date:</strong> ${new Date().toLocaleDateString()}</p>
@@ -531,9 +514,10 @@ export default function App() {
       .map((node, i) => {
         const indent =
           node.tagName === 'H2' ? '18px' : node.tagName === 'H3' ? '36px' : '0px';
+        const cleanHeading = escapeHtml(node.innerText || 'Untitled Section');
         return `<div style="margin-left:${indent}; padding:4px 0; border-bottom:1px dotted #cbd5e1; display:flex; justify-content:space-between;"><span><strong>${
           i + 1
-        }.</strong> ${node.innerText}</span><span style="color:#64748b;">Section ${i + 1}</span></div>`;
+        }.</strong> ${cleanHeading}</span><span style="color:#64748b;">Section ${i + 1}</span></div>`;
       })
       .join('');
 
@@ -576,8 +560,9 @@ export default function App() {
     showToast('🎙️ Listening... Speak now to dictate into your Word document!');
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      insertHtmlAtCursor(`<span>${transcript} </span>`);
+      const rawTranscript = event.results[0][0].transcript;
+      const cleanTranscript = escapeHtml(rawTranscript);
+      insertHtmlAtCursor(`<span>${cleanTranscript} </span>`);
       showToast('Dictated text inserted');
     };
     recognition.onend = () => setIsDictating(false);
@@ -692,13 +677,15 @@ export default function App() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const content = String(ev.target.result || '');
+      const rawContent = String(ev.target.result || '');
       const baseName = file.name.replace(/\.[^/.]+$/, '');
-      let htmlContent = content;
-      if (file.name.endsWith('.txt') || file.name.endsWith('.md')) {
-        htmlContent = content
+      let htmlContent = '';
+      if (file.name.endsWith('.html') || file.name.endsWith('.htm')) {
+        htmlContent = sanitizeHtml(rawContent);
+      } else {
+        htmlContent = rawContent
           .split('\n')
-          .map((line) => `<p>${line || '<br/>'}</p>`)
+          .map((line) => `<p>${escapeHtml(line) || '<br/>'}</p>`)
           .join('');
       }
       const newDoc = {
@@ -718,6 +705,7 @@ export default function App() {
   };
 
   const createBlankDocument = () => {
+    flushEditorInput();
     const newDoc = {
       id: `doc-${Date.now()}`,
       title: `Untitled Document ${documents.length + 1}`,
@@ -732,10 +720,11 @@ export default function App() {
   };
 
   const createDocumentFromTemplate = (tpl) => {
+    flushEditorInput();
     const newDoc = {
       id: `doc-${Date.now()}`,
       title: tpl.name,
-      content: tpl.content,
+      content: sanitizeHtml(tpl.content),
       updatedAt: Date.now(),
       comments: [],
     };
@@ -759,46 +748,7 @@ export default function App() {
     showToast('Document removed');
   };
 
-  // ==================== TO-DO HANDLERS ====================
-  const handleAddTodo = (todoData) => {
-    const newTodo = {
-      id: `todo-${Date.now()}`,
-      completed: false,
-      status: 'todo',
-      ...todoData,
-    };
-    setTodos((prev) => [newTodo, ...prev]);
-    showToast('Task added to To-Do List');
-  };
-
-  const handleToggleTodo = (id) => {
-    setTodos((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          const nextDone = !t.completed;
-          if (nextDone) fireCelebrationConfetti();
-          return { ...t, completed: nextDone, status: nextDone ? 'done' : 'todo' };
-        }
-        return t;
-      })
-    );
-  };
-
-  const handleDeleteTodo = (id) => {
-    setTodos((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const handleUpdateTodo = (id, updates) => {
-    setTodos((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
-    );
-  };
-
-  const handleClearCompletedTodos = () => {
-    setTodos((prev) => prev.filter((t) => !t.completed));
-    showToast('Cleared completed tasks');
-  };
-
+  // Convert todos to table in Word
   const handleInsertTodosIntoWord = () => {
     const html = convertTodosToHtml(todos, 'Action Plan & Task Checklist');
     insertHtmlAtCursor(html);
@@ -809,6 +759,7 @@ export default function App() {
   };
 
   const handleOpenTodosAsWordDoc = () => {
+    flushEditorInput();
     const html = convertTodosToHtml(todos, 'Master Action Plan & To-Do Report');
     const newDoc = {
       id: `doc-${Date.now()}`,
@@ -823,56 +774,21 @@ export default function App() {
     showToast('Created editable Word document from your To-Do List!');
   };
 
-  // ==================== NOTEPAD HANDLERS ====================
-  const handleCreateNote = () => {
-    const colors = ['yellow', 'blue', 'green', 'pink', 'purple', 'white', 'dark'];
-    const nextColor = colors[notes.length % colors.length];
-    const newNote = {
-      id: `note-${Date.now()}`,
-      title: `Quick Note ${notes.length + 1}`,
-      color: nextColor,
-      pinned: false,
-      tags: ['note'],
-      content: '',
-      updatedAt: Date.now(),
-    };
-    setNotes((prev) => [newNote, ...prev]);
-    setActiveNoteId(newNote.id);
-    showToast('Created new Super-Note');
-  };
-
-  const handleUpdateNote = (id, updates) => {
-    setNotes((prev) =>
-      prev.map((n) =>
-        n.id === id ? { ...n, ...updates, updatedAt: Date.now() } : n
-      )
-    );
-  };
-
-  const handleDeleteNote = (id) => {
-    const remaining = notes.filter((n) => n.id !== id);
-    setNotes(remaining);
-    if (activeNoteId === id && remaining[0]) {
-      setActiveNoteId(remaining[0].id);
-    }
-  };
-
   const handleInsertNoteIntoWord = (noteObj) => {
     const target =
       noteObj || notes.find((n) => n.id === activeNoteId) || notes[0];
     if (!target) return;
-    const parsedBody =
+    const rawParsed =
       typeof window !== 'undefined' && window.marked
         ? window.marked.parse(target.content || '')
-        : `<div style="white-space:pre-wrap;">${(target.content || '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')}</div>`;
+        : escapeHtml(target.content || '');
+    const cleanMarkdown = sanitizeHtml(rawParsed);
+    const cleanTitle = escapeHtml(target.title || 'Untitled Note');
 
     const formatted = `
       <div style="background-color:#fefce8; border-left:4px solid #eab308; padding:12px 16px; border-radius:6px; margin:14px 0;">
-        <h3 style="margin:0 0 6px; color:#854d0e;">📝 ${target.title}</h3>
-        ${parsedBody}
+        <h3 style="margin:0 0 6px; color:#854d0e;">📝 ${cleanTitle}</h3>
+        ${cleanMarkdown}
       </div><p><br/></p>`;
     insertHtmlAtCursor(formatted);
     if (workspaceMode !== 'word' && workspaceMode !== 'split') {
@@ -883,17 +799,21 @@ export default function App() {
 
   const handleConvertNoteToWordDoc = (noteObj) => {
     if (!noteObj) return;
-    const parsedBody =
+    flushEditorInput();
+    const rawParsed =
       typeof window !== 'undefined' && window.marked
         ? window.marked.parse(noteObj.content || '')
-        : (noteObj.content || '')
+        : noteObj.content
             .split('\n')
-            .map((line) => `<p>${line || '<br/>'}</p>`)
+            .map((line) => `<p>${escapeHtml(line) || '<br/>'}</p>`)
             .join('');
+    const cleanMarkdown = sanitizeHtml(rawParsed);
+    const cleanTitle = escapeHtml(noteObj.title || 'Converted Note');
+
     const newDoc = {
       id: `doc-${Date.now()}`,
       title: noteObj.title || 'Converted Note',
-      content: `<h1>${noteObj.title}</h1><hr/>${parsedBody}`,
+      content: `<h1>${cleanTitle}</h1><hr/>${cleanMarkdown}`,
       updatedAt: Date.now(),
       comments: [],
     };
@@ -918,18 +838,17 @@ export default function App() {
       return;
     }
 
-    const created = lines.map((line, idx) => ({
-      id: `todo-extracted-${Date.now()}-${idx}`,
-      text: line,
-      completed: false,
-      status: 'todo',
-      priority: 'medium',
-      category: 'General',
-      dueDate: '',
-      notes: `From note: ${noteObj.title}`,
-    }));
-    setTodos((prev) => [...created, ...prev]);
-    showToast(`Added ${created.length} task(s) to your To-Do List!`);
+    lines.forEach((line) => {
+      handleAddTodo({
+        text: line,
+        status: 'todo',
+        priority: 'medium',
+        category: 'General',
+        dueDate: '',
+        notes: `Extracted from note: ${noteObj.title}`,
+      });
+    });
+    showToast(`Added ${lines.length} task(s) to your To-Do List!`);
   };
 
   // Interactive Feature Guide "Try It Now" dispatcher
@@ -980,8 +899,8 @@ export default function App() {
     }
   };
 
-  // ==================== DOCUMENT METRICS ====================
-  const getDocStats = () => {
+  // Document Metrics
+  const stats = useMemo(() => {
     const temp = document.createElement('div');
     temp.innerHTML = activeDoc?.content || '';
     const text = (temp.innerText || temp.textContent || '').trim();
@@ -999,9 +918,7 @@ export default function App() {
       pages,
       readingMins,
     };
-  };
-
-  const stats = getDocStats();
+  }, [activeDoc?.content]);
 
   const getPaperStyle = () => {
     const marginMap = {
@@ -1049,6 +966,15 @@ export default function App() {
     };
   };
 
+  const pendingTodosCount = useMemo(
+    () => todos.filter((t) => t.status !== 'done').length,
+    [todos]
+  );
+  const doneTodosCount = useMemo(
+    () => todos.filter((t) => t.status === 'done').length,
+    [todos]
+  );
+
   return (
     <div
       className={`omniword-app atmosphere-${atmosphere} ${
@@ -1062,7 +988,7 @@ export default function App() {
         <div className="mesh-orb orb-3"></div>
       </div>
 
-      {/* ==================== TOP OFFICE 365 APPLICATION BAR ==================== */}
+      {/* ==================== TOP OFFICE APPLICATION BAR ==================== */}
       <header className="office-topbar no-print">
         <div className="topbar-left">
           <div
@@ -1076,7 +1002,7 @@ export default function App() {
             </div>
             <div className="brand-titles">
               <span className="brand-name">OmniWord Studio</span>
-              <span className="brand-badge">Fluent 2 Glass • Python + React</span>
+              <span className="brand-badge">Fluent 2 Glass • React + Vite</span>
             </div>
           </div>
 
@@ -1093,8 +1019,22 @@ export default function App() {
               }}
               title="Click to rename active Word Document"
             />
-            <span className="autosave-pill" title="Saved to SQLite3 + LocalStorage">
-              <i className="fa-solid fa-cloud-arrow-up"></i> Synced
+            <span
+              className="autosave-pill"
+              title={
+                isBackendAvailable
+                  ? 'Connected to local Python SQLite backend'
+                  : 'Saved locally in browser storage'
+              }
+            >
+              <i
+                className={
+                  isBackendAvailable
+                    ? 'fa-solid fa-cloud-arrow-up'
+                    : 'fa-solid fa-hard-drive'
+                }
+              ></i>{' '}
+              {isBackendAvailable ? 'Synced' : 'Saved locally'}
             </span>
           </div>
         </div>
@@ -1104,7 +1044,10 @@ export default function App() {
           <button
             type="button"
             className={`mode-pill ${workspaceMode === 'bento' ? 'active' : ''}`}
-            onClick={() => setWorkspaceMode('bento')}
+            onClick={() => {
+              flushEditorInput();
+              setWorkspaceMode('bento');
+            }}
           >
             <i className="fa-solid fa-table-cells-large"></i> Bento Hub
           </button>
@@ -1118,7 +1061,10 @@ export default function App() {
           <button
             type="button"
             className={`mode-pill ${workspaceMode === 'notepad' ? 'active' : ''}`}
-            onClick={() => setWorkspaceMode('notepad')}
+            onClick={() => {
+              flushEditorInput();
+              setWorkspaceMode('notepad');
+            }}
           >
             <i className="fa-solid fa-note-sticky"></i> Super-Notepad
             <span className="mode-count-badge">{notes.length}</span>
@@ -1126,12 +1072,13 @@ export default function App() {
           <button
             type="button"
             className={`mode-pill ${workspaceMode === 'todo' ? 'active' : ''}`}
-            onClick={() => setWorkspaceMode('todo')}
+            onClick={() => {
+              flushEditorInput();
+              setWorkspaceMode('todo');
+            }}
           >
             <i className="fa-solid fa-list-check"></i> To-Do &amp; Kanban
-            <span className="mode-count-badge">
-              {todos.filter((t) => !t.completed).length}
-            </span>
+            <span className="mode-count-badge">{pendingTodosCount}</span>
           </button>
           <button
             type="button"
@@ -1150,7 +1097,9 @@ export default function App() {
             value={atmosphere}
             onChange={(e) => {
               setAtmosphere(e.target.value);
-              localStorage.setItem('omniword_atmosphere', e.target.value);
+              try {
+                localStorage.setItem('omniword_atmosphere', e.target.value);
+              } catch {}
               showToast(`Atmosphere changed to ${e.target.options[e.target.selectedIndex].text}`);
             }}
             title="Change Animated Mesh Color Atmosphere"
@@ -1195,7 +1144,7 @@ export default function App() {
           <div className="onboarding-left">
             <span className="onboarding-tag">✨ Interactive Studios</span>
             <button type="button" onClick={() => setWorkspaceMode('bento')}>
-              🏠 Bento Dashboard &amp; Soundscapes
+              🏠 Bento Dashboard
             </button>
             <button type="button" onClick={() => setShowChartModal(true)}>
               📊 Insert Chart (Chart.js)
@@ -1210,7 +1159,7 @@ export default function App() {
               🎨 Freehand Draw / Sign
             </button>
             <button type="button" onClick={() => setWorkspaceMode('notepad')}>
-              🐍 Python 3.13 + Matplotlib Notepad
+              🐍 Python Notepad
             </button>
           </div>
           <button
@@ -1256,34 +1205,43 @@ export default function App() {
           viewSettings={viewSettings}
           setViewSettings={setViewSettings}
           onExportDocx={() => {
+            flushEditorInput();
             exportToDocx(activeDoc.title, activeDoc.content, pageSettings);
             fireCelebrationConfetti();
             showToast(`Exported "${activeDoc.title}.docx" (Microsoft Word)`);
           }}
           onExportDoc={() => {
+            flushEditorInput();
             exportToDoc(activeDoc.title, activeDoc.content, pageSettings);
             fireCelebrationConfetti();
             showToast(`Exported "${activeDoc.title}.doc" (Word 97-2003)`);
           }}
           onExportPdf={async () => {
+            flushEditorInput();
             showToast('Generating PDF document...');
             await exportToPdf(activeDoc.title, activeDoc.content, pageSettings);
             fireCelebrationConfetti();
             showToast(`Exported "${activeDoc.title}.pdf"`);
           }}
           onExportHtml={() => {
+            flushEditorInput();
             exportToHtmlFile(activeDoc.title, activeDoc.content, pageSettings);
             showToast(`Exported "${activeDoc.title}.html"`);
           }}
           onExportTxt={() => {
+            flushEditorInput();
             exportToTxtFile(activeDoc.title, activeDoc.content);
             showToast(`Exported "${activeDoc.title}.txt"`);
           }}
           onExportMd={() => {
+            flushEditorInput();
             exportToMarkdownFile(activeDoc.title, activeDoc.content);
             showToast(`Exported "${activeDoc.title}.md"`);
           }}
-          onPrint={() => printDocument(activeDoc.title, activeDoc.content, pageSettings)}
+          onPrint={() => {
+            flushEditorInput();
+            printDocument(activeDoc.title, activeDoc.content, pageSettings);
+          }}
           onNewDocument={createBlankDocument}
           onOpenTemplatesModal={() => setShowTemplatesModal(true)}
           onOpenFindReplace={() => setShowFindReplace((s) => !s)}
@@ -1367,7 +1325,10 @@ export default function App() {
                       <div
                         key={doc.id}
                         className={`doc-file-item ${doc.id === activeDoc.id ? 'active' : ''}`}
-                        onClick={() => setActiveDocId(doc.id)}
+                        onClick={() => {
+                          flushEditorInput();
+                          setActiveDocId(doc.id);
+                        }}
                       >
                         <i className="fa-solid fa-file-word"></i>
                         <span className="doc-file-title">{doc.title}</span>
@@ -1531,7 +1492,7 @@ export default function App() {
                       onClick={() => setDockTab('todo')}
                     >
                       <i className="fa-solid fa-list-check"></i> To-Do List (
-                      {todos.filter((t) => !t.completed).length})
+                      {pendingTodosCount})
                     </button>
                     <button
                       type="button"
@@ -1621,7 +1582,7 @@ export default function App() {
               onInsertRawHtmlIntoWord={(html) => {
                 insertHtmlAtCursor(html);
                 setWorkspaceMode('word');
-                showToast('Inserted Python Matplotlib Plot into Word Document!');
+                showToast('Inserted content into Word Document!');
               }}
               onConvertNoteToWordDoc={handleConvertNoteToWordDoc}
               onExtractTodosFromNote={handleExtractTodosFromNote}
@@ -1629,6 +1590,7 @@ export default function App() {
             />
           </div>
         )}
+
         {/* MODE 0: BENTO COMMAND DASHBOARD & ATMOSPHERE STUDIO */}
         {workspaceMode === 'bento' && (
           <div className="standalone-workspace-container">
@@ -1639,19 +1601,29 @@ export default function App() {
               atmosphere={atmosphere}
               setAtmosphere={(id) => {
                 setAtmosphere(id);
-                localStorage.setItem('omniword_atmosphere', id);
+                try {
+                  localStorage.setItem('omniword_atmosphere', id);
+                } catch {}
               }}
-              onSelectWorkspace={(mode) => setWorkspaceMode(mode)}
-              onOpenDocument={(id) => setActiveDocId(id)}
+              onSelectWorkspace={(mode) => {
+                flushEditorInput();
+                setWorkspaceMode(mode);
+              }}
+              onOpenDocument={(id) => {
+                flushEditorInput();
+                setActiveDocId(id);
+              }}
               onCreateBlankDoc={createBlankDocument}
               onOpenTemplates={() => setShowTemplatesModal(true)}
               onToggleTodo={handleToggleTodo}
               onExportDocx={(doc) => {
+                flushEditorInput();
                 exportToDocx(doc.title, doc.content, pageSettings);
                 fireCelebrationConfetti();
                 showToast(`Exported "${doc.title}.docx"`);
               }}
               onExportPdf={async (doc) => {
+                flushEditorInput();
                 await exportToPdf(doc.title, doc.content, pageSettings);
                 fireCelebrationConfetti();
                 showToast(`Exported "${doc.title}.pdf"`);
@@ -1680,8 +1652,7 @@ export default function App() {
             <i className="fa-regular fa-clock"></i> ~{stats.readingMins} min read
           </span>
           <span className="status-item">
-            <i className="fa-solid fa-check-double"></i> Tasks:{' '}
-            {todos.filter((t) => t.completed).length}/{todos.length} done
+            <i className="fa-solid fa-check-double"></i> Tasks: {doneTodosCount}/{todos.length} done
           </span>
         </div>
 

@@ -12,6 +12,18 @@ dist
 dist-ssr
 *.local
 
+# Database & SQLite storage
+*.db
+*.sqlite
+*.sqlite3
+omniword_studio.db
+
+# Dynamic bundles & caches
+app.bundle.jsx
+__pycache__/
+*.py[cod]
+.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -5,6 +5,7 @@ import {
   exportToTxtFile,
   exportToMarkdownFile,
 } from '../utils/exportUtils';
+import { sanitizeHtml } from '../utils/sanitize';
 
 const NOTE_COLORS = [
   { id: 'yellow', bg: '#fef9c3', border: '#fde047', label: 'Sticky Yellow' },
@@ -59,28 +60,31 @@ export default function NotepadWorkspace({
     return trimmed ? trimmed.split(/\s+/).length : 0;
   };
 
-  // Render Markdown using Marked.js
+  // Render Markdown using Marked.js safely
   const renderedMarkdownHtml = useMemo(() => {
     const raw = activeNote?.content || '';
     if (!raw.trim())
       return '<p style="color:#94a3b8;">Live Markdown preview will appear here as you type...</p>';
     if (typeof window !== 'undefined' && window.marked) {
       try {
-        return window.marked.parse(raw, { breaks: true, gfm: true });
+        const parsed = window.marked.parse(raw, { breaks: true, gfm: true });
+        return sanitizeHtml(parsed);
       } catch (e) {
         console.error(e);
       }
     }
-    return raw
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-      .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-      .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-      .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-      .replace(/\n/g, '<br/>');
+    return sanitizeHtml(
+      raw
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/gim, '<em>$1</em>')
+        .replace(/\n/g, '<br/>')
+    );
   }, [activeNote?.content]);
 
   // Local + Python NLP Analytics
@@ -184,7 +188,7 @@ export default function NotepadWorkspace({
     onUpdateNote(activeNote.id, { content: updated });
   };
 
-  // Run Python 3.13 on Backend (or Pyodide WebAssembly in Browser) OR JS in Browser
+  // Run Python via Pyodide WebAssembly (Client-side Sandbox) OR JS in Browser
   const handleExecuteCode = async () => {
     if (!activeNote) return;
     setIsRunningCode(true);
@@ -192,30 +196,7 @@ export default function NotepadWorkspace({
 
     if (codeLang === 'python') {
       try {
-        const res = await fetch('/api/run-python', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: activeNote.content }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setCodeOutput(
-            [`[Python ${data.pythonVersion || '3.13'} Kernel Output]`].concat(
-              (data.output || '').split('\n')
-            )
-          );
-          if (data.plotPng) {
-            setPythonPlot(data.plotPng);
-          }
-          setIsRunningCode(false);
-          return;
-        }
-      } catch (err) {
-        // Fallback to Pyodide WebAssembly Python in browser when hosted statically
-      }
-
-      try {
-        setCodeOutput(['[Loading Pyodide WebAssembly Python Runtime in Browser...]']);
+        setCodeOutput(['[Initializing Pyodide WebAssembly Python Runtime in Browser...]']);
         if (!window.loadPyodide) {
           await new Promise((resolve, reject) => {
             const s = document.createElement('script');

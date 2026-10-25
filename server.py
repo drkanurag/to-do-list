@@ -1,17 +1,14 @@
 """
-OmniWord Studio — Full-Stack Python Backend Server (Flask + SQLite3 + OpenXML + Python/Matplotlib Kernel)
-Serves the modern Word Processor, Super-Notepad, and Smart To-Do Suite on http://localhost:5173
+OmniWord Studio — Local Backend Companion (Flask + SQLite3 + OpenXML + Text Analytics)
+Securely bound to 127.0.0.1 on port 5000.
 """
 
-import base64
 import io
 import json
-import math
 import os
 import re
 import sqlite3
 import sys
-import traceback
 import zipfile
 from collections import Counter
 from datetime import datetime
@@ -19,12 +16,36 @@ from flask import Flask, jsonify, request, send_file, send_from_directory, Respo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "omniword_studio.db")
+DIST_DIR = os.path.join(BASE_DIR, "dist")
 
-app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
+# Ensure dist directory exists for static assets
+os.makedirs(DIST_DIR, exist_ok=True)
+
+# Securely serve only the dedicated dist folder — never project root
+app = Flask(__name__, static_folder=DIST_DIR, static_url_path="")
 
 
 # ==============================================================================
-# 1. SQLITE DATABASE INITIALIZATION & PERSISTENCE
+# CORS & SECURITY HEADERS (Localhost Development & Isolation)
+# ==============================================================================
+@app.after_request
+def add_security_and_cors_headers(response):
+    # Restrict CORS to local development Vite server and origin
+    origin = request.headers.get("Origin")
+    if origin in ("http://127.0.0.1:5173", "http://localhost:5173"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+
+    # Defensive browser headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+# ==============================================================================
+# 1. SQLITE DATABASE INITIALIZATION & STATE PERSISTENCE
 # ==============================================================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -47,18 +68,22 @@ init_db()
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
+    """Health check endpoint for frontend reachability detection."""
     return jsonify(
         {
             "status": "online",
-            "engine": f"Python {sys.version.split()[0]} (Flask + SQLite3 + NumPy/Pandas/Matplotlib)",
-            "database": "omniword_studio.db",
+            "version": "1.0.0",
+            "engine": f"Python {sys.version.split()[0]} (Flask + SQLite3)",
             "timestamp": datetime.now().isoformat(),
         }
     )
 
 
-@app.route("/api/state", methods=["GET", "POST"])
+@app.route("/api/state", methods=["GET", "POST", "OPTIONS"])
 def api_workspace_state():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
@@ -93,100 +118,7 @@ def api_workspace_state():
 
 
 # ==============================================================================
-# 2. LIVE PYTHON 3.13 + DATA SCIENCE & MATPLOTLIB KERNEL FOR SUPER-NOTEPAD
-# ==============================================================================
-@app.route("/api/run-python", methods=["POST"])
-def api_run_python():
-    """
-    Executes user Python code from the Super-Notepad in a controlled namespace
-    with math, statistics, numpy, pandas, and matplotlib pre-imported.
-    Captures stdout, stderr, return values, and any Matplotlib figure as base64 PNG!
-    """
-    data = request.get_json(silent=True) or {}
-    code = data.get("code", "")
-    if not code.strip():
-        return jsonify({"output": "No Python code provided.", "plotPng": None})
-
-    stdout_buf = io.StringIO()
-    plot_b64 = None
-
-    # Prepare rich data science execution environment
-    exec_globals = {
-        "__builtins__": __builtins__,
-        "math": math,
-        "re": re,
-        "json": json,
-        "datetime": datetime,
-    }
-
-    try:
-        import statistics
-        exec_globals["statistics"] = statistics
-    except ImportError:
-        pass
-
-    try:
-        import numpy as np
-        exec_globals["np"] = np
-        exec_globals["numpy"] = np
-    except ImportError:
-        pass
-
-    try:
-        import pandas as pd
-        exec_globals["pd"] = pd
-        exec_globals["pandas"] = pd
-    except ImportError:
-        pass
-
-    plt = None
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as _plt
-        plt = _plt
-        plt.close("all")
-        exec_globals["plt"] = plt
-    except ImportError:
-        pass
-
-    old_stdout = sys.stdout
-    old_stderr = sys.stderr
-    sys.stdout = stdout_buf
-    sys.stderr = stdout_buf
-
-    try:
-        compiled = compile(code, "<SuperNotepad_Python>", "exec")
-        exec(compiled, exec_globals)
-
-        # Check if user generated a Matplotlib plot
-        if plt is not None and plt.get_fignums():
-            img_buf = io.BytesIO()
-            plt.savefig(img_buf, format="png", bbox_inches="tight", dpi=140)
-            img_buf.seek(0)
-            plot_b64 = "data:image/png;base64," + base64.b64encode(img_buf.read()).decode("utf-8")
-            plt.close("all")
-    except Exception:
-        traceback.print_exc(file=stdout_buf)
-    finally:
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-
-    output_text = stdout_buf.getvalue()
-    if not output_text.strip() and not plot_b64:
-        output_text = "✓ Python script executed successfully (no stdout printed)."
-
-    return jsonify(
-        {
-            "output": output_text,
-            "plotPng": plot_b64,
-            "pythonVersion": sys.version.split()[0],
-        }
-    )
-
-
-# ==============================================================================
-# 3. PYTHON NLP SMART DOCUMENT & NOTEPAD ASSISTANT
+# 2. TEXT & DOCUMENT READABILITY ANALYTICS (NLP)
 # ==============================================================================
 def count_syllables(word: str) -> int:
     word = re.sub(r"[^a-z]", "", word.lower())
@@ -200,15 +132,17 @@ def count_syllables(word: str) -> int:
     return max(1, len(vowels))
 
 
-@app.route("/api/analyze-text", methods=["POST"])
+@app.route("/api/analyze-text", methods=["POST", "OPTIONS"])
 def api_analyze_text():
     """
-    Performs Python NLP readability analysis, extractive summarization,
+    Performs readability analysis, extractive summarization,
     action-item detection, and keyword frequency analysis.
     """
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
     data = request.get_json(silent=True) or {}
     raw_text = data.get("text", "")
-    # Strip HTML tags if present
     clean_text = re.sub(r"<[^>]+>", " ", raw_text)
     clean_text = re.sub(r"\s+", " ", clean_text).strip()
 
@@ -253,7 +187,7 @@ def api_analyze_text():
     freq = Counter(filtered_tokens)
     top_keywords = [{"word": w, "count": c} for w, c in freq.most_common(10)]
 
-    # Extractive Summarization (score sentences by keyword density)
+    # Extractive Summarization
     scored_sentences = []
     for idx, s in enumerate(sentences_list):
         s_words = re.findall(r"\b[a-zA-Z]+\b", s.lower())
@@ -264,7 +198,6 @@ def api_analyze_text():
     top_sents_ordered = [s for _, _, s in sorted(top_sents, key=lambda x: x[1])]
     summary = ". ".join(top_sents_ordered) + ("." if top_sents_ordered else "")
 
-    # Action Item Detection
     action_verbs = (
         "todo", "finalize", "review", "verify", "prepare", "create", "build",
         "export", "send", "complete", "update", "schedule", "assign", "check",
@@ -289,14 +222,17 @@ def api_analyze_text():
 
 
 # ==============================================================================
-# 4. NATIVE PYTHON OPENXML (.DOCX) SERVER-SIDE GENERATOR
+# 3. OPENXML (.DOCX) SERVER-SIDE GENERATOR
 # ==============================================================================
-@app.route("/api/export/docx", methods=["POST"])
+@app.route("/api/export/docx", methods=["POST", "OPTIONS"])
 def api_export_docx():
     """
     Packages a genuine Microsoft Word OpenXML (.docx) ZIP archive in Python
     with exact page dimensions, orientation, margins, and embedded HTML altChunk.
     """
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
     data = request.get_json(silent=True) or {}
     title = re.sub(r"[^a-zA-Z0-9_-]", "_", data.get("title", "Document"))
     html_content = data.get("html", "<p></p>")
@@ -360,50 +296,60 @@ def api_export_docx():
 
 
 # ==============================================================================
-# 5. DYNAMIC COMBINED FRONTEND BUNDLE ENDPOINT (/app.bundle.jsx) & STATIC ROUTES
+# 4. STATIC ASSET SERVING (Dedicated dist folder only)
 # ==============================================================================
-@app.route("/app.bundle.jsx", methods=["GET"])
-def serve_combined_jsx():
-    """
-    Combines all React components & utilities on the fly in Python so the browser
-    loads a single clean script with zero Vite/Node build requirement.
-    """
-    files = [
-        "src/utils/exportUtils.js",
-        "src/utils/templates.js",
-        "src/components/InteractiveModals.jsx",
-        "src/components/BentoDashboard.jsx",
-        "src/components/RibbonToolbar.jsx",
-        "src/components/TodoManager.jsx",
-        "src/components/NotepadWorkspace.jsx",
-        "src/App.jsx",
-    ]
-    parts = ["const { useState, useEffect, useRef, useCallback, useMemo } = React;\n"]
-    for rel_path in files:
-        full_path = os.path.join(BASE_DIR, rel_path)
-        if os.path.exists(full_path):
-            with open(full_path, "r", encoding="utf-8") as f:
-                code = f.read()
-            # Strip ES module imports/exports for clean unified execution
-            code = re.sub(r"^\s*import\s+[^;]+?\s+from\s+['\"][^'\"]+['\"];?\s*$", "", code, flags=re.MULTILINE)
-            code = re.sub(r"^\s*import\s+['\"][^'\"]+['\"];?\s*$", "", code, flags=re.MULTILINE)
-            code = re.sub(r"export\s+default\s+function\s+", "function ", code)
-            code = re.sub(r"export\s+async\s+function\s+", "async function ", code)
-            code = re.sub(r"export\s+function\s+", "function ", code)
-            code = re.sub(r"export\s+const\s+", "const ", code)
-            parts.append(f"// --- {rel_path} ---\n" + code)
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_static_app(path):
+    # If file exists inside dist, serve it
+    if path != "" and os.path.exists(os.path.join(DIST_DIR, path)):
+        return send_from_directory(DIST_DIR, path)
 
-    parts.append("\nReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));\n")
-    combined = "\n\n".join(parts)
-    return Response(combined, mimetype="text/plain; charset=utf-8")
+    # Fall back to index.html in dist for client-side routing
+    if os.path.exists(os.path.join(DIST_DIR, "index.html")):
+        return send_from_directory(DIST_DIR, "index.html")
 
-
-@app.route("/")
-def serve_index():
-    return send_from_directory(BASE_DIR, "index.html")
+    # If dist hasn't been compiled yet, return an informative status message
+    return Response(
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OmniWord Studio — Companion Server</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { max-width: 540px; background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 32px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    h2 { color: #60a5fa; margin-top: 0; font-size: 22px; }
+    p { color: #94a3b8; font-size: 14.5px; line-height: 1.6; }
+    code { background: #0f172a; color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-size: 13px; font-family: monospace; }
+    .badge { display: inline-block; padding: 4px 10px; background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); border-radius: 9999px; font-size: 12px; font-weight: 600; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Backend Active</div>
+    <h2>OmniWord Studio Companion API</h2>
+    <p>The local Python companion is running securely bound to <code>http://127.0.0.1:5000</code>.</p>
+    <p>To run the user interface:</p>
+    <ul>
+      <li><p><strong>Development:</strong> Run <code>npm run dev</code> to start the Vite live dev server on <code>http://localhost:5173</code>.</p></li>
+      <li><p><strong>Production Build:</strong> Run <code>npm run build</code> to compile assets into <code>dist/</code>.</p></li>
+    </ul>
+  </div>
+</body>
+</html>""",
+        mimetype="text/html",
+    )
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5173))
-    print(f"[OmniWord Studio] Full-Stack Python Server running on http://localhost:{port}")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+
+    # Prefer production WSGI server waitress if installed, fallback to Flask
+    try:
+        from waitress import serve
+        print(f"[OmniWord Studio] Production WSGI server (Waitress) listening on http://127.0.0.1:{port}")
+        serve(app, host="127.0.0.1", port=port)
+    except ImportError:
+        print(f"[OmniWord Studio] Local companion server listening on http://127.0.0.1:{port}")
+        app.run(host="127.0.0.1", port=port, debug=False)
